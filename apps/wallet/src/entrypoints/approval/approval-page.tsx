@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '@status-im/components'
 import { CloseIcon } from '@status-im/icons/20'
-import { PasswordModal } from '@status-im/wallet/components'
+import { HardwareSignScreen, PasswordModal } from '@status-im/wallet/components'
 
 import ethereumIcon from '../../assets/networks/ethereum.png'
 import statusNetworkIcon from '../../assets/networks/status-network.png'
@@ -44,6 +44,9 @@ export function ApprovalPage() {
   const [isSessionActive, setIsSessionActive] = useState(false)
   const [isCheckingSession, setIsCheckingSession] = useState(true)
   const [isUnlocking, setIsUnlocking] = useState(false)
+  const [hardwareSigning, setHardwareSigning] = useState<{
+    sourceFingerprint: number | undefined
+  } | null>(null)
 
   useEffect(() => {
     getPendingApproval().then(setApproval)
@@ -79,6 +82,7 @@ export function ApprovalPage() {
   }
 
   const isSign = approval.type === 'personal_sign'
+  const isHardware = isSign && approval.walletType === 'hardware-qr'
 
   const respond = async (approved: boolean) => {
     if (!approval || isSubmitting) return
@@ -89,6 +93,60 @@ export function ApprovalPage() {
       approved,
     })
     window.close()
+  }
+
+  const handleSignClick = async () => {
+    if (!approval || isSubmitting) return
+    if (!isHardware || approval.type !== 'personal_sign') {
+      respond(true)
+      return
+    }
+    const wallets = await apiClient.wallet.all.query()
+    const wallet = wallets.find(w => w.id === approval.walletId)
+    if (!wallet || wallet.type !== 'hardware-qr') {
+      throw new Error('Wallet not found or not a hardware wallet')
+    }
+    setHardwareSigning({
+      sourceFingerprint: wallet.hardware?.sourceFingerprint,
+    })
+  }
+
+  const handleHardwareSignature = async (signature: string) => {
+    if (!approval || isSubmitting) return
+    setIsSubmitting(true)
+    await setApprovalResult({
+      id: approval.id,
+      approved: true,
+      signature,
+    })
+    window.close()
+  }
+
+  const handleHardwareCancel = async () => {
+    if (!approval) return
+    await setApprovalResult({ id: approval.id, approved: false })
+    window.close()
+  }
+
+  if (hardwareSigning && approval.type === 'personal_sign') {
+    return (
+      <div
+        data-customisation="blue"
+        className="flex h-screen flex-col bg-white-100 p-4"
+      >
+        <HardwareSignScreen
+          request={{
+            kind: 'personalMessage',
+            message: approval.message as `0x${string}`,
+          }}
+          address={approval.address}
+          sourceFingerprint={hardwareSigning.sourceFingerprint}
+          origin={approval.origin}
+          onSignature={handleHardwareSignature}
+          onCancel={handleHardwareCancel}
+        />
+      </div>
+    )
   }
 
   return (
@@ -157,7 +215,7 @@ export function ApprovalPage() {
         </Button>
         <Button
           variant="primary"
-          onPress={() => respond(true)}
+          onPress={isSign ? handleSignClick : () => respond(true)}
           disabled={isSubmitting}
         >
           {isSign ? 'Sign' : 'Connect'}

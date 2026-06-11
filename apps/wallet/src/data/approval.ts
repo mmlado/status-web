@@ -1,3 +1,5 @@
+export type WalletType = 'mnemonic' | 'privateKey' | 'hardware-qr'
+
 export type PendingApproval =
   | {
       id: string
@@ -19,11 +21,14 @@ export type PendingApproval =
       accountName: string
       chainId: string
       message: string
+      walletId: string
+      walletType: WalletType
     }
 
 export type ApprovalResult = {
   id: string
   approved: boolean
+  signature?: string
 }
 
 export async function setPendingApproval(

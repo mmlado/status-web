@@ -7,6 +7,7 @@ import {
   getPendingApproval,
   type PendingApproval,
   setPendingApproval,
+  type WalletType,
 } from '../data/approval'
 import { publicClient } from './public-client'
 
@@ -43,6 +44,11 @@ async function getAddress(): Promise<string | null> {
 async function getAccountName(): Promise<string> {
   const result = await chrome.storage.session.get('dappAccountName')
   return (result.dappAccountName as string) || DEFAULT_ACCOUNT_NAME
+}
+
+async function getWalletType(): Promise<WalletType> {
+  const result = await chrome.storage.session.get('dappWalletType')
+  return ((result.dappWalletType as WalletType) || 'mnemonic') as WalletType
 }
 
 async function getWalletId(): Promise<string | null> {
@@ -319,6 +325,7 @@ export async function handleRpcRequest(
 
       const signChainId = await getChainIdForOrigin(origin)
       const signAccountName = await getAccountName()
+      const walletType = await getWalletType()
       const signResult = await requestApproval({
         type: 'personal_sign',
         origin,
@@ -328,6 +335,8 @@ export async function handleRpcRequest(
         accountName: signAccountName,
         chainId: signChainId,
         message,
+        walletId,
+        walletType,
       })
 
       if (!signResult) {
@@ -335,6 +344,10 @@ export async function handleRpcRequest(
           code: 4001,
           message: 'User rejected the request.',
         })
+      }
+
+      if (signResult.signature) {
+        return signResult.signature
       }
 
       const signed = await (

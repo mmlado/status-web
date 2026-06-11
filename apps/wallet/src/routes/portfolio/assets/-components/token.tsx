@@ -326,7 +326,7 @@ const Token = (props: Props) => {
     emoji: '🍑',
     color: 'magenta',
   }
-  const isWatchOnlyWallet = currentWallet?.type === 'hardware-qr'
+  const isWatchOnlyWallet = false
 
   const signTransaction = async (formData: SendAssetsFormData) => {
     // Throws GasShiftedError for spikes >=30% so the modal can ask for confirmation.
