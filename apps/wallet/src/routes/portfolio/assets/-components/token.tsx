@@ -33,10 +33,7 @@ import {
 } from '@status-im/wallet/components'
 import { ERROR_MESSAGES } from '@status-im/wallet/constants'
 import { useCopyToClipboard } from '@status-im/wallet/hooks'
-import {
-  getTransactionHash,
-  isEthereumTransactionHash,
-} from '@status-im/wallet/utils'
+import { isEthereumTransactionHash } from '@status-im/wallet/utils'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { cx } from 'class-variance-authority'
@@ -47,9 +44,9 @@ import { useEthBalance } from '@/hooks/use-eth-balance'
 import { useGasFees } from '@/hooks/use-gas-fees'
 import { renderMarkdown } from '@/lib/markdown'
 import { notifyTransactionSent } from '@/lib/notifications'
-import { apiClient } from '@/providers/api-client'
 import { usePassword } from '@/providers/password-context'
 import { usePendingTransactions } from '@/providers/pending-transactions-context'
+import { useWalletSigner } from '@/providers/signer-context'
 import { useWallet } from '@/providers/wallet-context'
 import { fetchTrpcData } from '@/utils/trpc'
 import { ExchangeDrawer } from '~/components/exchange-drawer'
@@ -90,6 +87,7 @@ const Token = (props: Props) => {
   const { currentWallet } = useWallet()
   const { addPendingTransaction } = usePendingTransactions()
   const { hasActiveSession, requestPassword } = usePassword()
+  const { signAndSendTransaction } = useWalletSigner()
 
   const [activeDataType, setActiveDataType] =
     useState<ChartDataType>(DEFAULT_DATA_TYPE)
@@ -327,6 +325,7 @@ const Token = (props: Props) => {
     color: 'magenta',
   }
   const isWatchOnlyWallet = false
+  const isHardwareWallet = currentWallet?.type === 'hardware-qr'
 
   const signTransaction = async (formData: SendAssetsFormData) => {
     // Throws GasShiftedError for spikes >=30% so the modal can ask for confirmation.
@@ -335,126 +334,82 @@ const Token = (props: Props) => {
     const gasParams = freshGasFees.txParams
     const isNative = finalTokenDetail?.summary.symbol === 'ETH'
 
+    const gas = BigInt(gasParams.gasLimit)
+    const maxFeePerGas = BigInt(gasParams.maxFeePerGas)
+    const maxPriorityFeePerGas = BigInt(gasParams.maxPriorityFeePerGas)
+
+    let txHash: string
+    let amountHex: string
+    let tokenDecimals: number
+
     if (isNative) {
-      const amountHex = parseUnits(formData.amount, 18).toString(16)
-      const params = {
-        amount: amountHex,
-        toAddress: formData.to,
-        fromAddress: address,
-        walletId: currentWallet?.id || '',
-        gasLimit: gasParams.gasLimit,
-        maxFeePerGas: gasParams.maxFeePerGas,
-        maxInclusionFeePerGas: gasParams.maxPriorityFeePerGas,
-      }
-
-      const result = await apiClient.wallet.account.ethereum.send.mutate(params)
-      if (!result.id || result.id.txid?.error) {
-        console.error(result.id.txid?.error)
-        toast.negative(ERROR_MESSAGES.TX_FAILED)
-        throw new Error('Transaction failed')
-      }
-
-      const txHash = getTransactionHash(result.id.txid ?? result.id)
-
-      if (!isEthereumTransactionHash(txHash)) {
-        toast.negative(ERROR_MESSAGES.TX_FAILED)
-        throw new Error('Transaction hash not found')
-      }
-
-      await notifyTransactionSent(
-        formData.amount,
-        finalTokenDetail.summary.symbol,
-      )
-
-      addPendingTransaction({
-        hash: txHash,
-        from: address,
-        to: formData.to,
-        value: parseFloat(formData.amount),
-        displayAmount: formData.amount,
-        asset: finalTokenDetail.summary.symbol,
-        network: 'ethereum',
-        status: 'pending',
-        category: 'external',
-        blockNum: '0',
-        metadata: {
-          blockTimestamp: new Date().toISOString(),
-        },
-        rawContract: {
-          value: amountHex,
-          address: ticker.startsWith('0x') ? ticker : null,
-          decimal: '18',
-        },
-        eurRate: 0,
+      const value = parseUnits(formData.amount, 18)
+      amountHex = value.toString(16)
+      txHash = await signAndSendTransaction({
+        to: formData.to as `0x${string}`,
+        value,
+        gas,
+        maxFeePerGas,
+        maxPriorityFeePerGas,
       })
-      return txHash
     } else {
-      const tokenDecimals = asset.decimals ?? 18
+      tokenDecimals = asset.decimals ?? 18
       const amount = parseUnits(formData.amount, tokenDecimals)
-      const amountHex = amount.toString(16)
+      amountHex = amount.toString(16)
       const contractAddress = finalTokenDetail?.summary.contracts.ethereum
 
       if (!contractAddress) {
         throw new Error('Token contract address not found')
       }
 
-      const data = erc20.encodeFunctionData('transfer', [formData.to, amount])
+      const data = erc20.encodeFunctionData('transfer', [
+        formData.to,
+        amount,
+      ]) as `0x${string}`
 
-      const params = {
-        amount: '0',
-        toAddress: contractAddress,
-        fromAddress: address,
-        walletId: currentWallet?.id || '',
-        gasLimit: gasParams.gasLimit,
-        maxFeePerGas: gasParams.maxFeePerGas,
-        maxInclusionFeePerGas: gasParams.maxPriorityFeePerGas,
+      txHash = await signAndSendTransaction({
+        to: contractAddress as `0x${string}`,
+        value: 0n,
         data,
-      }
-
-      const result =
-        await apiClient.wallet.account.ethereum.sendErc20.mutate(params)
-
-      if (!result.id || result.id.txid?.error) {
-        console.error(result.id.txid?.error)
-        toast.negative(ERROR_MESSAGES.TX_FAILED)
-        throw new Error('Transaction failed')
-      }
-
-      const txHash = getTransactionHash(result.id.txid ?? result.id)
-
-      if (!isEthereumTransactionHash(txHash)) {
-        toast.negative(ERROR_MESSAGES.TX_FAILED)
-        throw new Error('Transaction hash not found')
-      }
-
-      await notifyTransactionSent(
-        formData.amount,
-        finalTokenDetail.summary.symbol,
-      )
-
-      addPendingTransaction({
-        hash: txHash,
-        from: address,
-        to: formData.to,
-        value: parseFloat(formData.amount),
-        displayAmount: formData.amount,
-        asset: finalTokenDetail.summary.symbol,
-        network: 'ethereum',
-        status: 'pending',
-        category: 'external',
-        blockNum: '0',
-        metadata: {
-          blockTimestamp: new Date().toISOString(),
-        },
-        rawContract: {
-          value: amountHex,
-          address: ticker.startsWith('0x') ? ticker : null,
-          decimal: asset.decimals?.toString() ?? '18',
-        },
-        eurRate: 0,
+        gas,
+        maxFeePerGas,
+        maxPriorityFeePerGas,
       })
-      return txHash
     }
+
+    if (!isEthereumTransactionHash(txHash)) {
+      toast.negative(ERROR_MESSAGES.TX_FAILED)
+      throw new Error('Transaction hash not found')
+    }
+
+    await notifyTransactionSent(
+      formData.amount,
+      finalTokenDetail.summary.symbol,
+    )
+
+    addPendingTransaction({
+      hash: txHash,
+      from: address,
+      to: formData.to,
+      value: parseFloat(formData.amount),
+      displayAmount: formData.amount,
+      asset: finalTokenDetail.summary.symbol,
+      network: 'ethereum',
+      status: 'pending',
+      category: 'external',
+      blockNum: '0',
+      metadata: {
+        blockTimestamp: new Date().toISOString(),
+      },
+      rawContract: {
+        value: amountHex!,
+        address: ticker.startsWith('0x') ? ticker : null,
+        decimal: isNative ? '18' : asset.decimals?.toString() ?? '18',
+      },
+      eurRate: 0,
+    })
+
+    return txHash
   }
 
   return (
@@ -536,6 +491,7 @@ const Token = (props: Props) => {
                   ethBalance: sendAsset.ethBalance,
                 }}
                 signTransaction={signTransaction}
+                closeBeforeSigning={isHardwareWallet}
                 hasActiveSession={hasActiveSession}
                 requestPassword={requestPassword}
                 gasFees={gasFeeQuery.data}
@@ -643,6 +599,7 @@ const Token = (props: Props) => {
                     ethBalance: sendAsset.ethBalance,
                   }}
                   signTransaction={signTransaction}
+                  closeBeforeSigning={isHardwareWallet}
                   hasActiveSession={hasActiveSession}
                   requestPassword={requestPassword}
                   gasFees={gasFeeQuery.data}
